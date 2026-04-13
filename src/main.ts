@@ -1,60 +1,111 @@
-import './style.css'
-import typescriptLogo from './assets/typescript.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import { setupCounter } from './counter.ts'
+import './style.css';
+import { CanvasRenderer } from './render/CanvasRenderer';
+import { DragManager } from './render/DragManager';
+import { gameStore } from './store/gameStore';
+import { BALANCE } from './data/balance';
 
-document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-<section id="center">
-  <div class="hero">
-    <img src="${heroImg}" class="base" width="170" height="179">
-    <img src="${typescriptLogo}" class="framework" alt="TypeScript logo"/>
-    <img src=${viteLogo} class="vite" alt="Vite logo" />
+// ─── DOM Setup ───
+const app = document.querySelector<HTMLDivElement>('#app')!;
+app.innerHTML = `
+  <div class="game-container" id="game-root">
+    <div class="hud">
+      <span class="hud-item" id="hud-coins">💰 0</span>
+      <span class="hud-item" id="hud-level">⭐ Lv.1</span>
+      <span class="hud-item" id="hud-combo" style="display:none"></span>
+      <span class="hud-item" id="hud-fever" style="display:none">🔥 FEVER!</span>
+    </div>
+    <div class="board-wrapper">
+      <canvas id="game-canvas"></canvas>
+    </div>
+    <div class="info-bar">
+      <p>같은 아이템을 드래그해서 합치세요!</p>
+      <p>📦 생산기를 탭하면 새 아이템이 나옵니다</p>
+    </div>
   </div>
-  <div>
-    <h1>Get started</h1>
-    <p>Edit <code>src/main.ts</code> and save to test <code>HMR</code></p>
-  </div>
-  <button id="counter" type="button" class="counter"></button>
-</section>
+`;
 
-<div class="ticks"></div>
+// ─── Canvas Setup ───
+const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
+const gameRoot = document.getElementById('game-root')!;
+const { width: boardW, height: boardH } = BALANCE.board;
 
-<section id="next-steps">
-  <div id="docs">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#documentation-icon"></use></svg>
-    <h2>Documentation</h2>
-    <p>Your questions, answered</p>
-    <ul>
-      <li>
-        <a href="https://vite.dev/" target="_blank">
-          <img class="logo" src=${viteLogo} alt="" />
-          Explore Vite
-        </a>
-      </li>
-      <li>
-        <a href="https://www.typescriptlang.org" target="_blank">
-          <img class="button-icon" src="${typescriptLogo}" alt="">
-          Learn more
-        </a>
-      </li>
-    </ul>
-  </div>
-  <div id="social">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#social-icon"></use></svg>
-    <h2>Connect with us</h2>
-    <p>Join the Vite community</p>
-    <ul>
-      <li><a href="https://github.com/vitejs/vite" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#github-icon"></use></svg>GitHub</a></li>
-      <li><a href="https://chat.vite.dev/" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#discord-icon"></use></svg>Discord</a></li>
-      <li><a href="https://x.com/vite_js" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#x-icon"></use></svg>X.com</a></li>
-      <li><a href="https://bsky.app/profile/vite.dev" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#bluesky-icon"></use></svg>Bluesky</a></li>
-    </ul>
-  </div>
-</section>
+function resizeCanvas(): void {
+  const maxW = Math.min(window.innerWidth - 40, 900);
+  const maxH = window.innerHeight * 0.65;
 
-<div class="ticks"></div>
-<section id="spacer"></section>
-`
+  const cellFromW = Math.floor(maxW / boardW);
+  const cellFromH = Math.floor(maxH / boardH);
+  const cellSize = Math.min(cellFromW, cellFromH, 80);
 
-setupCounter(document.querySelector<HTMLButtonElement>('#counter')!)
+  canvas.width = cellSize * boardW;
+  canvas.height = cellSize * boardH;
+  canvas.style.width = `${canvas.width}px`;
+  canvas.style.height = `${canvas.height}px`;
+}
+
+resizeCanvas();
+
+// ─── Renderer & Input ───
+let renderer = new CanvasRenderer(canvas, boardW, boardH);
+
+window.addEventListener('resize', () => {
+  resizeCanvas();
+  renderer = new CanvasRenderer(canvas, boardW, boardH);
+  dragManager.updateRenderer(renderer);
+});
+
+const dragManager = new DragManager(
+  canvas,
+  renderer,
+  () => gameStore.getState().board,
+  (source, target) => gameStore.getState().handleDrop(source, target),
+  (pos) => gameStore.getState().handleTap(pos),
+);
+
+// ─── HUD Elements ───
+const hudCoins = document.getElementById('hud-coins')!;
+const hudLevel = document.getElementById('hud-level')!;
+const hudCombo = document.getElementById('hud-combo')!;
+const hudFever = document.getElementById('hud-fever')!;
+
+// ─── Game Loop ───
+let lastFeverSpawn = 0;
+
+function gameLoop(): void {
+  const now = Date.now();
+  const state = gameStore.getState();
+
+  // Fever: throttle spawns
+  if (state.isFever && now - lastFeverSpawn > BALANCE.combo.feverSpawnIntervalMs) {
+    state.tick(now);
+    lastFeverSpawn = now;
+  } else if (!state.isFever) {
+    state.tick(now);
+  }
+
+  // Render
+  const currentState = gameStore.getState();
+  renderer.render(currentState.board, dragManager.getDragInfo());
+
+  if (currentState.mergeEffectPos) {
+    renderer.renderMergeEffect(currentState.mergeEffectPos);
+  }
+
+  // HUD
+  hudCoins.textContent = `💰 ${currentState.coins}`;
+  hudLevel.textContent = `⭐ Lv.${currentState.level}`;
+
+  if (currentState.comboCount > 1) {
+    hudCombo.textContent = `🔥 ${currentState.comboCount} COMBO!`;
+    hudCombo.style.display = '';
+  } else {
+    hudCombo.style.display = 'none';
+  }
+
+  hudFever.style.display = currentState.isFever ? '' : 'none';
+  gameRoot.classList.toggle('fever', currentState.isFever);
+
+  requestAnimationFrame(gameLoop);
+}
+
+requestAnimationFrame(gameLoop);
